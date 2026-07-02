@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="color-scheme" content="light">
+  <title>Message settings</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 13px;
+      color: #303030;
+      background: #fff;
+      width: 420px;
+      margin: 0;
+      padding: 14px;
+      box-sizing: border-box;
+    }
+    h1 { font-size: 15px; margin: 0 0 8px; }
+    label { display: block; font-weight: 600; margin: 12px 0 4px; }
+    .hint { font-weight: 400; color: #737278; font-size: 11px; margin-top: 2px; }
+    input[type="text"], textarea {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 8px;
+      border: 1px solid #dcdcde;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: #fff;
+      color: #303030;
+      resize: vertical;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    #save {
+      padding: 7px 18px;
+      background: #1f75cb;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    #save:hover { background: #1a63ac; }
+    #status { font-size: 12px; }
+    #status.ok { color: #24663b; }
+    #status.err { color: #ae1800; }
+    #openOptions {
+      margin-left: auto;
+      background: none;
+      border: none;
+      color: #1f75cb;
+      cursor: pointer;
+      font-size: 12px;
+      padding: 0;
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <h1>Message settings</h1>
+
+  <label for="webhookUrl">Webhook URL (endpoint)</label>
+  <input type="text" id="webhookUrl" placeholder="https://hooks.slack.com/services/…">
+  <div class="hint">Slack Incoming Webhook or a custom endpoint. For a domain other than hooks.slack.com Chrome will ask for access.</div>
+
+  <label for="templateMain">Main template</label>
+  <textarea id="templateMain" rows="4"></textarea>
+  <div class="hint">"Send to Slack" and "Copy". Variables: $list, $list_formatted.</div>
+
+  <label for="templateAlt">Alternative template</label>
+  <textarea id="templateAlt" rows="4"></textarea>
+  <div class="hint">"Copy (alt. template)". Same variables.</div>
+
+  <label for="oneApproverList">1-approver list</label>
+  <textarea id="oneApproverList" rows="3" placeholder="release/1.2&#10;main"></textarea>
+  <div class="hint">One target version per line — such MRs get no "(2 approvers)" mark.</div>
+
+  <div class="row">
+    <button id="save">Save</button>
+    <span id="status"></span>
+    <button id="openOptions">All settings →</button>
+  </div>
+
+  <script src="common.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
