@@ -13,6 +13,11 @@
   const LIST_SELECTOR = "#content-body div.merge-requests-holder ul";
   const CHECK_CLASS = "glmr-check";
   const WRAP_CLASS = "glmr-check-wrap";
+  const SELECT_ALL_ID = "glmr-select-all";
+  const SELECT_ALL_WRAP_ID = "glmr-select-all-wrap";
+  // DOM event used to hand the page over from an orphaned copy of this script
+  // (left behind after an extension reload) to a freshly injected one.
+  const TAKEOVER_EVENT = "glmr:takeover";
 
   // ---------- Checkbox styles (outside Shadow DOM, but prefixed with glmr-) ----------
 
@@ -34,6 +39,21 @@
         margin: 0;
         cursor: pointer;
       }
+      #${SELECT_ALL_WRAP_ID} {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 10px;
+        font-size: 13px;
+        cursor: pointer;
+        user-select: none;
+      }
+      #${SELECT_ALL_WRAP_ID} input {
+        width: 16px;
+        height: 16px;
+        margin: 0;
+        cursor: pointer;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -50,11 +70,41 @@
   }
 
   function removeCheckboxes() {
+    const selectAllWrap = document.getElementById(SELECT_ALL_WRAP_ID);
+    if (selectAllWrap) selectAllWrap.remove();
     const wraps = document.querySelectorAll(`.${WRAP_CLASS}`);
     if (!wraps.length) return;
     for (const wrap of wraps) wrap.remove();
     log(`checkboxes removed: ${wraps.length} (state is not "open")`);
     updatePanel();
+  }
+
+  function ensureSelectAll(list) {
+    if (document.getElementById(SELECT_ALL_WRAP_ID)) return;
+    const wrap = document.createElement("label");
+    wrap.id = SELECT_ALL_WRAP_ID;
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.id = SELECT_ALL_ID;
+    cb.title = "Select all MRs";
+    cb.addEventListener("change", () => {
+      const on = cb.checked;
+      for (const box of getAllBoxes()) box.checked = on;
+      updatePanel();
+    });
+    wrap.appendChild(cb);
+    wrap.appendChild(document.createTextNode("Select all"));
+    list.parentElement.insertBefore(wrap, list);
+    log("select-all checkbox added");
+  }
+
+  function syncSelectAll() {
+    const master = document.getElementById(SELECT_ALL_ID);
+    if (!master) return;
+    const total = getAllBoxes().length;
+    const checked = getCheckedBoxes().length;
+    master.checked = total > 0 && checked === total;
+    master.indeterminate = checked > 0 && checked < total;
   }
 
   function addCheckboxes() {
@@ -97,10 +147,18 @@
     if (added > 0) {
       log(`checkboxes added: +${added} (total MR items: ${items.length})`);
     }
+    if (items.length > 0) {
+      ensureSelectAll(list);
+      syncSelectAll();
+    }
+  }
+
+  function getAllBoxes() {
+    return Array.from(document.querySelectorAll(`input.${CHECK_CLASS}`));
   }
 
   function getCheckedBoxes() {
-    return Array.from(document.querySelectorAll(`.${CHECK_CLASS}:checked`));
+    return Array.from(document.querySelectorAll(`input.${CHECK_CLASS}:checked`));
   }
 
   function clearSelection() {
@@ -271,6 +329,7 @@
     const count = getCheckedBoxes().length;
     panelRefs.count.textContent = String(count);
     panelHost.style.display = count > 0 ? "block" : "none";
+    syncSelectAll();
   }
 
   function showNotice(text, ok) {
@@ -305,6 +364,11 @@
     }
     const oneApprover = new Set(glmrParseList(settings.oneApproverList));
     const text = glmrRenderTemplate(settings[templateKey], mrs, oneApprover, style);
+    if (!text || !text.trim()) {
+      warn(`rendered message is empty (${templateKey}, ${style}) — nothing to send/copy`);
+      showNotice("Message is empty — check the template in settings", false);
+      return null;
+    }
     log(`message (${templateKey}, ${style}), 1-approver:`, [...oneApprover], "\n" + text);
     return { settings, text, mrs };
   }
@@ -369,9 +433,30 @@
   }
 
   log("content script loaded on", location.href);
+
+  // If an orphaned copy from a previous extension load is still running in
+  // this tab, make it remove its UI and observers before we add ours
+  // (dispatch is synchronous, so the DOM is clean by the next line).
+  document.dispatchEvent(new Event(TAKEOVER_EVENT));
+
   injectCheckboxStyles();
   addCheckboxes();
 
   const observer = new MutationObserver(scheduleScan);
   observer.observe(document.body, { childList: true, subtree: true });
+
+  document.addEventListener(
+    TAKEOVER_EVENT,
+    () => {
+      log("newer content script took over — cleaning up this copy");
+      observer.disconnect();
+      const styles = document.getElementById("glmr-styles");
+      if (styles) styles.remove();
+      const selectAllWrap = document.getElementById(SELECT_ALL_WRAP_ID);
+      if (selectAllWrap) selectAllWrap.remove();
+      for (const wrap of document.querySelectorAll(`.${WRAP_CLASS}`)) wrap.remove();
+      if (panelHost) panelHost.remove();
+    },
+    { once: true }
+  );
 })();

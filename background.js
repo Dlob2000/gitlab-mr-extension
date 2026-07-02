@@ -57,6 +57,35 @@ async function syncRegistrations() {
   }
 
   await registerOpenRule(hosts);
+  await injectIntoOpenTabs(hosts);
+}
+
+// Registered content scripts only run on future navigations, so after an
+// extension reload/update (or a host list change) already-open GitLab tabs
+// are left with a dead script ("extension context invalidated") until F5.
+// Inject into them explicitly; content.js guards against double injection
+// and takes over from an orphaned copy via a DOM event.
+async function injectIntoOpenTabs(hosts) {
+  if (!hosts.length) return;
+  let tabs;
+  try {
+    tabs = await chrome.tabs.query({ url: hosts.map((h) => `*://${h}/*`) });
+  } catch (e) {
+    warn("tab query failed:", e.message);
+    return;
+  }
+  for (const tab of tabs) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["common.js", "content.js"]
+      });
+      log("content script injected into open tab", tab.id, tab.url);
+    } catch (e) {
+      // Discarded/chrome:// tabs etc. — the tab will pick it up on reload.
+      warn("injection into tab", tab.id, "failed:", e.message);
+    }
+  }
 }
 
 // ---------- Marker URL interception (opening a set of tabs) ----------
