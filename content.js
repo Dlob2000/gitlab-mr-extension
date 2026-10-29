@@ -1,4 +1,4 @@
-// Content script: MR checkboxes, floating panel, DOM parsing, templates, clipboard, Slack.
+// Content script: MR checkboxes, approval counts, floating panel, templates, clipboard, Slack.
 (() => {
   "use strict";
 
@@ -11,13 +11,20 @@
   const warn = (...args) => console.warn("[GLMR]", ...args);
 
   const LIST_SELECTOR = "#content-body div.merge-requests-holder ul";
+  const MR_LINK_SELECTOR = "div.issuable-main-info .merge-request-title a, .merge-request-title.title a";
   const CHECK_CLASS = "glmr-check";
   const WRAP_CLASS = "glmr-check-wrap";
+  const APPROVAL_CLASS = "glmr-approvals";
+  const APPROVAL_WRAP_CLASS = "glmr-approvals-wrap";
+  const APPROVAL_CACHE_MS = 60_000;
+  const APPROVAL_REQUEST_LIMIT = 4;
+  const APPROVAL_TIMEOUT_MS = 15_000;
   const SELECT_ALL_ID = "glmr-select-all";
   const SELECT_ALL_WRAP_ID = "glmr-select-all-wrap";
   // DOM event used to hand the page over from an orphaned copy of this script
   // (left behind after an extension reload) to a freshly injected one.
   const TAKEOVER_EVENT = "glmr:takeover";
+  let disposed = false;
 
   // ---------- Checkbox styles (outside Shadow DOM, but prefixed with glmr-) ----------
 
@@ -53,6 +60,13 @@
         height: 16px;
         margin: 0;
         cursor: pointer;
+      }
+      .${APPROVAL_CLASS} {
+        white-space: nowrap;
+      }
+      .${APPROVAL_CLASS}[data-state="loading"],
+      .${APPROVAL_CLASS}[data-state="error"] {
+        opacity: 0.7;
       }
     `;
     document.head.appendChild(style);
@@ -166,12 +180,138 @@
     updatePanel();
   }
 
+  // ---------- Approval counts ----------
+
+  const approvalCache = new Map();
+  const approvalQueue = [];
+  const approvalControllers = new Set();
+
+  function getApprovalApiUrl(link) {
+    try {
+      const url = new URL(link.getAttribute("href"), location.href);
+      if (url.origin !== location.origin) return null;
+      const match = /^\/(.+)\/-\/merge_requests\/(\d+)(?:\/.*)?$/.exec(url.pathname);
+      if (!match) return null;
+      const project = encodeURIComponent(decodeURIComponent(match[1]));
+      return `${url.origin}/api/v4/projects/${project}/merge_requests/${match[2]}/approvals`;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function fetchApprovals(apiUrl, entry, controller) {
+    const timeout = setTimeout(() => controller.abort(), APPROVAL_TIMEOUT_MS);
+    try {
+      // GitLab's REST API accepts the existing browser session cookie.
+      const response = await fetch(apiUrl, {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+        redirect: "error",
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (!data || !Array.isArray(data.approved_by)) {
+        throw new Error("Invalid approval response");
+      }
+      // Count actual approvers, not approvals_required - approvals_left:
+      // a user can satisfy multiple rules, or approve outside the rules.
+      entry.approvalsGiven = data.approved_by.length;
+      entry.approvalsRequired = Number.isInteger(data.approvals_required)
+        ? data.approvals_required : null;
+      entry.status = "ready";
+    } catch (e) {
+      entry.status = "error";
+      entry.error = e.name === "AbortError" ? "Request timed out" : e.message;
+      if (!disposed) warn("approval count unavailable:", apiUrl, entry.error);
+    } finally {
+      clearTimeout(timeout);
+      entry.expiresAt = Date.now() + APPROVAL_CACHE_MS;
+      approvalControllers.delete(controller);
+      if (!disposed) {
+        scheduleScan();
+        runApprovalQueue();
+      }
+    }
+  }
+
+  function runApprovalQueue() {
+    while (!disposed && approvalQueue.length && approvalControllers.size < APPROVAL_REQUEST_LIMIT) {
+      const { apiUrl, entry } = approvalQueue.shift();
+      const controller = new AbortController();
+      approvalControllers.add(controller);
+      void fetchApprovals(apiUrl, entry, controller);
+    }
+  }
+
+  function updateApprovalCounts() {
+    const list = document.querySelector(LIST_SELECTOR);
+    if (!list || disposed) return;
+    for (const li of list.querySelectorAll('li[id^="merge_request_"]')) {
+      const link = li.querySelector(MR_LINK_SELECTOR);
+      const apiUrl = link && getApprovalApiUrl(link);
+      const controls = li.querySelector("ul.controls");
+      if (!apiUrl || !controls) continue;
+
+      let badge = li.querySelector(`.${APPROVAL_CLASS}`);
+      if (!badge) {
+        badge = document.createElement("span");
+        badge.className = APPROVAL_CLASS;
+      }
+      let badgeItem = controls.querySelector(`.${APPROVAL_WRAP_CLASS}`);
+      if (!badgeItem) {
+        badgeItem = document.createElement("li");
+        badgeItem.className = `${APPROVAL_WRAP_CLASS} gl-display-flex gl-mr-0!`;
+      }
+      if (badge.parentElement !== badgeItem) badgeItem.appendChild(badge);
+
+      // Keep the count beside GitLab's approval status, using its native badge
+      // styles so size, colors, and dark mode stay consistent with the page.
+      const nativeBadge = controls.querySelector('[data-testid="mr-appovals"], [data-testid="mr-approvals"]');
+      const nativeItem = nativeBadge?.closest("li");
+      if (nativeItem?.parentElement === controls) {
+        if (nativeItem.nextElementSibling !== badgeItem) nativeItem.after(badgeItem);
+      } else if (badgeItem.parentElement !== controls) {
+        controls.appendChild(badgeItem);
+      }
+
+      let entry = approvalCache.get(apiUrl);
+      if (!entry || (entry.status !== "loading" && entry.expiresAt <= Date.now())) {
+        entry = { status: "loading" };
+        approvalCache.set(apiUrl, entry);
+        approvalQueue.push({ apiUrl, entry });
+      }
+
+      let text = "Approvals: …";
+      let title = "Loading approvals…";
+      if (entry.status === "ready") {
+        text = `Approvals: ${entry.approvalsGiven}`;
+        title = `${entry.approvalsGiven} approval${entry.approvalsGiven === 1 ? "" : "s"} received`;
+      } else if (entry.status === "error") {
+        text = "Approvals: —";
+        title = `Approval count unavailable (${entry.error}). Reload the page to retry.`;
+      }
+      const variant = entry.status === "ready" && nativeBadge?.classList.contains("badge-success")
+        ? "badge-success" : "badge-muted";
+      const badgeClasses = `${APPROVAL_CLASS} gl-badge badge badge-pill ${variant} sm`;
+      // Idempotent writes keep our own MutationObserver from triggering a loop.
+      if (badge.className !== badgeClasses) badge.className = badgeClasses;
+      if (badge.textContent !== text) badge.textContent = text;
+      if (badge.title !== title) badge.title = title;
+      if (badge.dataset.state !== entry.status) badge.dataset.state = entry.status;
+    }
+    runApprovalQueue();
+  }
+
+  function refreshApprovalsOnReturn() {
+    if (!document.hidden) scheduleScan();
+  }
+
   // ---------- Parsing MR data from the DOM ----------
 
   function parseMr(li) {
-    const link = li.querySelector(
-      "div.issuable-main-info .merge-request-title a, .merge-request-title.title a"
-    );
+    const link = li.querySelector(MR_LINK_SELECTOR);
     if (!link) {
       warn("MR link/title not found in item:", li.id || li);
       return null;
@@ -191,17 +331,9 @@
       warn("target version not found (span.project-ref-path a) in:", li.id || li);
     }
 
-    // The "Approved" badge may be absent — that is a valid state (0 approvals).
-    let approvalsGiven = 0;
-    let approvalsRequired = null;
-    const badge = li.querySelector('div.issuable-meta [data-testid="mr-appovals"], [data-testid="mr-appovals"]');
-    if (badge) {
-      const m = /\((\d+)\s+of\s+(\d+)\s+given\)/.exec(badge.getAttribute("title") || "");
-      if (m) {
-        approvalsGiven = Number(m[1]);
-        approvalsRequired = Number(m[2]);
-      }
-    }
+    const approval = approvalCache.get(getApprovalApiUrl(link));
+    const approvalsGiven = approval?.status === "ready" ? approval.approvalsGiven : null;
+    const approvalsRequired = approval?.status === "ready" ? approval.approvalsRequired : null;
 
     return { title, url, version, approvalsGiven, approvalsRequired };
   }
@@ -327,7 +459,7 @@
   function updatePanel() {
     buildPanel();
     const count = getCheckedBoxes().length;
-    panelRefs.count.textContent = String(count);
+    if (panelRefs.count.textContent !== String(count)) panelRefs.count.textContent = String(count);
     panelHost.style.display = count > 0 ? "block" : "none";
     syncSelectAll();
   }
@@ -419,14 +551,15 @@
 
   // ---------- DOM observation (SPA navigation, filters) ----------
 
-  let scanScheduled = false;
+  let scanFrame = null;
 
   function scheduleScan() {
-    if (scanScheduled) return;
-    scanScheduled = true;
-    requestAnimationFrame(() => {
-      scanScheduled = false;
+    if (disposed || scanFrame !== null) return;
+    scanFrame = requestAnimationFrame(() => {
+      scanFrame = null;
+      if (disposed) return;
       addCheckboxes();
+      updateApprovalCounts();
       // The list may have been re-rendered — refresh the counter/panel visibility.
       if (panelHost) updatePanel();
     });
@@ -441,20 +574,33 @@
 
   injectCheckboxStyles();
   addCheckboxes();
+  updateApprovalCounts();
 
   const observer = new MutationObserver(scheduleScan);
   observer.observe(document.body, { childList: true, subtree: true });
+  window.addEventListener("focus", refreshApprovalsOnReturn);
+  document.addEventListener("visibilitychange", refreshApprovalsOnReturn);
 
   document.addEventListener(
     TAKEOVER_EVENT,
     () => {
       log("newer content script took over — cleaning up this copy");
+      disposed = true;
       observer.disconnect();
+      if (scanFrame !== null) cancelAnimationFrame(scanFrame);
+      clearTimeout(noticeTimer);
+      window.removeEventListener("focus", refreshApprovalsOnReturn);
+      document.removeEventListener("visibilitychange", refreshApprovalsOnReturn);
+      approvalQueue.length = 0;
+      for (const controller of approvalControllers) controller.abort();
+      approvalCache.clear();
       const styles = document.getElementById("glmr-styles");
       if (styles) styles.remove();
       const selectAllWrap = document.getElementById(SELECT_ALL_WRAP_ID);
       if (selectAllWrap) selectAllWrap.remove();
       for (const wrap of document.querySelectorAll(`.${WRAP_CLASS}`)) wrap.remove();
+      for (const item of document.querySelectorAll(`.${APPROVAL_WRAP_CLASS}`)) item.remove();
+      for (const badge of document.querySelectorAll(`.${APPROVAL_CLASS}`)) badge.remove();
       if (panelHost) panelHost.remove();
     },
     { once: true }

@@ -83,15 +83,18 @@ function glmrFormatItem(mr, style) {
   return `${mr.title} (${version}) ${mr.url}`;
 }
 
-// Substitutes $list / $list_formatted into the template.
+// Substitutes $list / $list_formatted / $list_urls into the template.
 // oneApproverSet — Set of target version values for which a single approval is enough.
 function glmrRenderTemplate(template, mrs, oneApproverSet, style) {
   const plain = mrs.map((mr) => glmrFormatItem(mr, style));
   const formatted = mrs.map((mr, i) =>
     oneApproverSet.has(mr.version) ? plain[i] : plain[i] + " (2 approvers)"
   );
-  // $list_formatted first: $list is its prefix.
-  return String(template)
-    .replaceAll("$list_formatted", formatted.join("\n"))
-    .replaceAll("$list", plain.join("\n"));
+  const lists = {
+    list: plain.join("\n"),
+    list_formatted: formatted.join("\n"),
+    list_urls: mrs.map((mr) => mr.url).join("\n")
+  };
+  // Match longer names first; a single pass keeps inserted MR data literal.
+  return String(template).replace(/\$(list_formatted|list_urls|list)/g, (_, name) => lists[name]);
 }

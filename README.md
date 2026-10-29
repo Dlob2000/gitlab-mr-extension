@@ -1,7 +1,7 @@
 # GitLab MR → Slack
 
 Chrome extension (Manifest V3): adds checkboxes to the GitLab Merge Request list page,
-lets you select MRs and send a templated message to Slack (Incoming Webhook)
+shows approval counts, and lets you select MRs and send a templated message to Slack (Incoming Webhook)
 or copy it to the clipboard.
 
 Detailed requirements: [REQUIREMENTS.md](REQUIREMENTS.md).
@@ -26,6 +26,27 @@ Detailed requirements: [REQUIREMENTS.md](REQUIREMENTS.md).
    - **Copy** — main template, plain text `title (version) url`;
    - **Copy (alt. template)** — alternative template;
    - **Reset** — uncheck all checkboxes.
+
+### Approval counts
+
+Each MR row gets an **Approvals: N** badge beside GitLab's **Approved** badge in
+the controls area, showing the number of users who approved it, including zero.
+It uses GitLab's native badge styling and matches the green **Approved** badge
+when the count is loaded. Without **Approved**, or while loading/unavailable, the
+count uses a muted badge in the controls area. Counts appear on all list tabs,
+while selection checkboxes remain limited to open MRs.
+
+The extension reads GitLab's
+[approval state API](https://docs.gitlab.com/api/merge_request_approvals/#retrieve-approval-state-for-a-merge-request)
+using your existing signed-in session; no access token or additional setup is needed.
+The count includes all approving users, even if their approvals do not satisfy a
+particular approval rule, so it does not indicate whether the MR is ready to merge.
+
+**Approvals: …** means loading; **Approvals: —** means the count is unavailable
+(hover for details). API failures are never displayed as zero approvals.
+Requests are limited to four at a time. Results, including errors, are cached for
+one minute and refreshed when the list changes or you return to the tab after
+the cache expires. Reload the page to force a fresh request.
 
 ## Message setup
 
@@ -57,7 +78,11 @@ Variables:
 
 - `$list` — the selected MRs, one per line: `<title> (<target version>) <url>`;
 - `$list_formatted` — same, but MRs whose target version is missing from the
-  1-approver list get the ` (2 approvers)` suffix.
+  1-approver list get the ` (2 approvers)` suffix;
+- `$list_urls` — only the selected MR URLs, one per line, without titles, target
+  versions, or approver annotations. Works for both Slack and clipboard output.
+
+For a links-only message, set the main or alternative template to exactly `$list_urls`.
 
 ## Marker URL: opening a set of tabs
 
@@ -98,7 +123,7 @@ then reload the GitLab page.
 | File | Purpose |
 |---|---|
 | `manifest.json` | MV3 manifest |
-| `content.js` | checkboxes, panel (Shadow DOM), MR parsing, templates, clipboard |
+| `content.js` | checkboxes, approval counts, panel (Shadow DOM), MR parsing, templates, clipboard |
 | `background.js` | POST to the Slack Webhook; dynamic content script registration for the configured hosts |
 | `common.js` | shared settings/template rendering (content script + options) |
 | `options.html` / `options.js` | settings page |

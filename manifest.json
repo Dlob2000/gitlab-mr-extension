@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GitLab MR → Slack",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Select Merge Requests with checkboxes in the GitLab list and send them to Slack (Incoming Webhook) or copy them using a template.",
   "permissions": ["storage", "scripting", "declarativeNetRequest"],
   "host_permissions": ["https://hooks.slack.com/*"],
